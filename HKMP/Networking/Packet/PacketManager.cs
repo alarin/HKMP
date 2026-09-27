@@ -866,73 +866,38 @@ internal class PacketManager {
     }
 
     /// <summary>
-    /// Handle received data and leftover data and store subsequent leftover data again.
+    /// Handle received data, which is either a whole packet or a fragment of a packet that exceeded the MTU.
     /// </summary>
     /// <param name="buffer">Byte array of the buffer containing received data. The entirety of the array does not
     /// necessarily contain received bytes. Rather, the first <paramref name="numReceived"/> bytes are received data.
     /// </param>
     /// <param name="numReceived">Number of received bytes in the buffer.</param>
-    /// <param name="leftoverData">Reference byte array that should be filled with leftover data.</param>
+    /// <param name="fragments">The packet fragments received so far from the same peer.</param>
     /// <returns>A list of packets that were constructed from the received data.</returns>
-    public static List<Packet> HandleReceivedData(byte[] buffer, int numReceived, ref byte[] leftoverData) {
-        // Packets larger than the MTU are split by the sender into parts that each arrive in their own datagram,
-        // all of them exactly MTU in size except the last. Datagrams can be lost or reordered, so a datagram is only
-        // used as the next part if it has exactly the expected size. Otherwise the incomplete packet can never be
-        // completed and is dropped, instead of being glued to unrelated data and corrupting everything after it.
-        if (leftoverData is { Length: > 0 }) {
-            var remaining = leftoverData.Length < 2
-                ? -1
-                : BitConverter.ToUInt16(leftoverData, 0) + 2 - leftoverData.Length;
-            if (numReceived != System.Math.Min(remaining, UdpUpdateManager.PacketMtu)) {
-                Logger.Debug("Dropping incomplete packet, the next part of it was lost or reordered");
-                leftoverData = null;
-            }
-        }
-
-        var continuesPacket = leftoverData is { Length: > 0 };
-
-        // Make a new byte array exactly the length of number of received bytes and fill it
-        var receivedData = new byte[numReceived];
-        for (var i = 0; i < numReceived; i++) {
-            receivedData[i] = buffer[i];
-        }
-
-        var currentData = receivedData;
-
-        // Check whether we have leftover data from the previous read, and concatenate the two byte arrays
-        if (leftoverData is { Length: > 0 }) {
-            currentData = new byte[leftoverData.Length + receivedData.Length];
-
-            // Copy over the leftover data into the current data array
-            for (var i = 0; i < leftoverData.Length; i++) {
-                currentData[i] = leftoverData[i];
-            }
-
-            // Copy over the trimmed data into the current data array
-            for (var i = 0; i < receivedData.Length; i++) {
-                currentData[leftoverData.Length + i] = receivedData[i];
-            }
-
-            leftoverData = null;
-        }
-
-        // Create packets from the data
-        var packets = ByteArrayToPackets(currentData, ref leftoverData);
-
-        // A datagram that does not continue a packet consists of whole packets, and can only end in an incomplete
-        // packet if it is the first part of a split packet and thus exactly MTU in size. Anything else is a later
-        // part of a packet whose first part was lost or reordered, and reading it as packets only produces garbage.
-        if (!continuesPacket) {
-            var numRead = leftoverData?.Length ?? 0;
-            foreach (var packet in packets) {
-                numRead += 2 + packet.Length;
-            }
-
-            if (numRead != numReceived || leftoverData != null && numReceived != UdpUpdateManager.PacketMtu) {
-                Logger.Debug("Dropping datagram that is part of a packet whose first part was lost or reordered");
-                leftoverData = null;
+    public static List<Packet> HandleReceivedData(byte[] buffer, int numReceived, PacketFragments fragments) {
+        byte[] data;
+        if (PacketFragments.IsFragment(buffer, numReceived)) {
+            data = fragments.Add(buffer, numReceived);
+            if (data == null) {
                 return new List<Packet>();
             }
+        } else {
+            data = new byte[numReceived];
+            Array.Copy(buffer, data, numReceived);
+        }
+
+        byte[] leftoverData = null;
+        var packets = ByteArrayToPackets(data, ref leftoverData);
+
+        // The data must consist of whole packets, otherwise it was not created by a peer with the same protocol
+        var numRead = leftoverData?.Length ?? 0;
+        foreach (var packet in packets) {
+            numRead += 2 + packet.Length;
+        }
+
+        if (leftoverData != null || numRead != data.Length) {
+            Logger.Debug("Dropping received data that does not consist of whole packets");
+            return new List<Packet>();
         }
 
         return packets;

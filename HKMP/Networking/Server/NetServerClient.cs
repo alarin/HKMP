@@ -56,9 +56,9 @@ internal class NetServerClient {
     public readonly IPEndPoint EndPoint;
 
     /// <summary>
-    /// Byte array containing leftover data from this client that was not processed as a packet yet.
+    /// The fragments of packets from this client that were not completed yet.
     /// </summary>
-    public byte[] LeftoverData;
+    public readonly PacketFragments PacketFragments = new();
 
     /// <summary>
     /// Construct the client with the given DTLS transport and endpoint.

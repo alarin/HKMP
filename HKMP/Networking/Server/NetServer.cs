@@ -175,12 +175,12 @@ internal class NetServer : INetServer {
                     client = CreateNewClient(dtlsServerClient);
                 }
 
-                // Leftover data is kept per client, because packets larger than the MTU arrive in multiple
+                // Fragments are kept per client, because packets larger than the MTU arrive in multiple
                 // datagrams and those of different clients interleave in the queue
                 var packets = PacketManager.HandleReceivedData(
                     receivedData.Buffer,
                     receivedData.NumReceived,
-                    ref client.LeftoverData
+                    client.PacketFragments
                 );
 
                 HandleClientPackets(client, packets);
