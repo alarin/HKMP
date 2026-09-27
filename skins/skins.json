@@ -1,0 +1,13 @@
+{
+  "skins": [
+    { "name": "Onigiri", "id": 1 },
+    { "name": "Painter's Pupil", "id": 2 },
+    { "name": "Pink Bow (2.0)", "id": 3 },
+    { "name": "Baby Mantis", "id": 4 },
+    {
+      "name": "Sus",
+      "id": 5,
+      "source": "https://drive.google.com/file/d/1yXq1hGdEbBaAzKzzj_Rz5w2irAIgcPeN/view"
+    }
+  ]
+}
