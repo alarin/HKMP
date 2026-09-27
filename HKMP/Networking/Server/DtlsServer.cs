@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -18,6 +18,11 @@ internal class DtlsServer {
     /// The maximum packet size for sending and receiving DTLS packets.
     /// </summary>
     public const int MaxPacketSize = 1400;
+
+    /// <summary>
+    /// The maximum time in milliseconds that a DTLS handshake with a client can take.
+    /// </summary>
+    public const int HandshakeTimeoutMillis = 5000;
 
     /// <summary>
     /// The DTLS server protocol instance from which to start establishing connections with clients.
@@ -50,7 +55,7 @@ internal class DtlsServer {
     /// Dictionary mapping IP endpoints to DTLS server client instances. This keeps track of individual clients
     /// connected to the server and their respective objects.
     /// </summary>
-    private readonly Dictionary<IPEndPoint, DtlsServerClient> _dtlsClients;
+    private readonly ConcurrentDictionary<IPEndPoint, DtlsServerClient> _dtlsClients;
 
     /// <summary>
     /// Event that is called when data is received from the given DTLS server client.
@@ -63,7 +68,7 @@ internal class DtlsServer {
     private int _port;
 
     public DtlsServer() {
-        _dtlsClients = new Dictionary<IPEndPoint, DtlsServerClient>();
+        _dtlsClients = new ConcurrentDictionary<IPEndPoint, DtlsServerClient>();
     }
 
     /// <summary>
@@ -112,12 +117,10 @@ internal class DtlsServer {
     /// </summary>
     /// <param name="endPoint">The IP endpoint of the client.</param>
     public void DisconnectClient(IPEndPoint endPoint) {
-        if (!_dtlsClients.TryGetValue(endPoint, out var dtlsServerClient)) {
+        if (!_dtlsClients.TryRemove(endPoint, out var dtlsServerClient)) {
             Logger.Warn("Could not find DtlsServerClient to disconnect");
             return;
         }
-
-        _dtlsClients.Remove(endPoint);
 
         InternalDisconnectClient(dtlsServerClient);
     }
@@ -172,8 +175,24 @@ internal class DtlsServer {
                 Logger.Debug($"Received data on server socket from unknown IP ({ipEndPoint}), length: {numReceived}");
 
                 serverDatagramTransport = _currentDatagramTransport;
-                // Set the IP endpoint of the datagram transport instance so it can send data to the correct IP
-                serverDatagramTransport.IPEndPoint = ipEndPoint;
+                if (serverDatagramTransport == null) {
+                    continue;
+                }
+
+                // Only one handshake can run on the current transport. The first ClientHello claims it for its
+                // endpoint and datagrams from other unknown endpoints are dropped until that handshake is done,
+                // their DTLS clients retransmit. Mixing datagrams of two endpoints breaks both handshakes.
+                var transportEndPoint = serverDatagramTransport.IPEndPoint;
+                if (transportEndPoint == null) {
+                    if (!IsClientHello(buffer, numReceived)) {
+                        continue;
+                    }
+
+                    // Set the IP endpoint of the datagram transport instance so it can send data to the correct IP
+                    serverDatagramTransport.IPEndPoint = ipEndPoint;
+                } else if (!transportEndPoint.Equals(ipEndPoint)) {
+                    continue;
+                }
             } else {
                 serverDatagramTransport = dtlsServerClient.DatagramTransport;
             }
@@ -185,8 +204,23 @@ internal class DtlsServer {
                 }, cancellationToken);
             } catch (OperationCanceledException) {
                 break;
+            } catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException) {
+                // The transport was disposed in the meantime, because the client disconnected or its handshake
+                // failed, so the datagram has no receiver anymore
             }
         }
+    }
+
+    /// <summary>
+    /// Whether the given datagram is a DTLS record with the first ClientHello of a handshake.
+    /// </summary>
+    /// <param name="buffer">The buffer containing the datagram.</param>
+    /// <param name="length">The length of the datagram.</param>
+    /// <returns>True if the datagram starts a handshake, false otherwise.</returns>
+    private static bool IsClientHello(byte[] buffer, int length) {
+        // The 13-byte DTLS record header starts with content type 22 (handshake) and has epoch 0 at offset 3,
+        // it is followed by the handshake message type, which is 1 for client_hello
+        return length > 13 && buffer[0] == 22 && buffer[3] == 0 && buffer[4] == 0 && buffer[13] == 1;
     }
 
     /// <summary>
@@ -209,8 +243,19 @@ internal class DtlsServer {
             } catch (TlsFatalAlert e) when (e.AlertDescription == AlertDescription.user_canceled) {
                 break;
             } catch (IOException e) {
-                Logger.Error($"IOException while accepting DTLS connection:\n{e}");
-                break;
+                if (cancellationToken.IsCancellationRequested) {
+                    break;
+                }
+
+                // A failed handshake only concerns that one client, so we keep accepting new connections
+                if (e is TlsTimeoutException) {
+                    Logger.Debug("Timeout while accepting DTLS connection");
+                } else {
+                    Logger.Error($"IOException while accepting DTLS connection:\n{e}");
+                }
+
+                datagramTransport.Dispose();
+                continue;
             }
 
             if (cancellationToken.IsCancellationRequested) {
@@ -233,7 +278,7 @@ internal class DtlsServer {
                 ReceiveLoopTokenSource = new CancellationTokenSource()
             };
 
-            _dtlsClients.Add(endPoint, dtlsServerClient);
+            _dtlsClients[endPoint] = dtlsServerClient;
 
             Logger.Debug("Starting receive loop for client");
             new Thread(() => ClientReceiveLoop(

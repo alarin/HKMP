@@ -275,6 +275,15 @@ internal class ServerTlsServer : AbstractTlsServer {
     }
 
     /// <summary>
+    /// The maximum time the handshake can take in milliseconds before timing out. Only one handshake is accepted
+    /// at a time, so without a timeout a client that stops halfway would block all other clients from connecting.
+    /// </summary>
+    /// <returns>The integer value of the timeout in milliseconds.</returns>
+    public override int GetHandshakeTimeoutMillis() {
+        return DtlsServer.HandshakeTimeoutMillis;
+    }
+
+    /// <summary>
     /// Get the server credentials for sending to clients to authenticate the server.
     /// </summary>
     /// <returns>TlsCredentials instance representing the credentials.</returns>
