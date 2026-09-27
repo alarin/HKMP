@@ -875,6 +875,22 @@ internal class PacketManager {
     /// <param name="leftoverData">Reference byte array that should be filled with leftover data.</param>
     /// <returns>A list of packets that were constructed from the received data.</returns>
     public static List<Packet> HandleReceivedData(byte[] buffer, int numReceived, ref byte[] leftoverData) {
+        // Packets larger than the MTU are split by the sender into parts that each arrive in their own datagram,
+        // all of them exactly MTU in size except the last. Datagrams can be lost or reordered, so a datagram is only
+        // used as the next part if it has exactly the expected size. Otherwise the incomplete packet can never be
+        // completed and is dropped, instead of being glued to unrelated data and corrupting everything after it.
+        if (leftoverData is { Length: > 0 }) {
+            var remaining = leftoverData.Length < 2
+                ? -1
+                : BitConverter.ToUInt16(leftoverData, 0) + 2 - leftoverData.Length;
+            if (numReceived != System.Math.Min(remaining, UdpUpdateManager.PacketMtu)) {
+                Logger.Debug("Dropping incomplete packet, the next part of it was lost or reordered");
+                leftoverData = null;
+            }
+        }
+
+        var continuesPacket = leftoverData is { Length: > 0 };
+
         // Make a new byte array exactly the length of number of received bytes and fill it
         var receivedData = new byte[numReceived];
         for (var i = 0; i < numReceived; i++) {
@@ -901,7 +917,25 @@ internal class PacketManager {
         }
 
         // Create packets from the data
-        return ByteArrayToPackets(currentData, ref leftoverData);
+        var packets = ByteArrayToPackets(currentData, ref leftoverData);
+
+        // A datagram that does not continue a packet consists of whole packets, and can only end in an incomplete
+        // packet if it is the first part of a split packet and thus exactly MTU in size. Anything else is a later
+        // part of a packet whose first part was lost or reordered, and reading it as packets only produces garbage.
+        if (!continuesPacket) {
+            var numRead = leftoverData?.Length ?? 0;
+            foreach (var packet in packets) {
+                numRead += 2 + packet.Length;
+            }
+
+            if (numRead != numReceived || leftoverData != null && numReceived != UdpUpdateManager.PacketMtu) {
+                Logger.Debug("Dropping datagram that is part of a packet whose first part was lost or reordered");
+                leftoverData = null;
+                return new List<Packet>();
+            }
+        }
+
+        return packets;
     }
 
     /// <summary>

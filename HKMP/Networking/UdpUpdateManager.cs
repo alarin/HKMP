@@ -19,6 +19,14 @@ internal abstract class UdpUpdateManager {
     /// The number of ack numbers from previous packets to store in the packet. 
     /// </summary>
     public const int AckSize = 64;
+
+    /// <summary>
+    /// The MTU (maximum transfer unit) to use to send packets with. If the length of a packet exceeds this, we break
+    /// it up into smaller packets before sending. This ensures that we control the breaking of packets in most
+    /// cases and do not rely on smaller network devices for the breaking up as this could impact performance.
+    /// This size is lower than the limit for DTLS packets, since there is a slight DTLS overhead for packets.
+    /// </summary>
+    public const int PacketMtu = 1200;
 }
 
 /// <inheritdoc />
@@ -29,14 +37,6 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
     /// The time in milliseconds to disconnect after not receiving any updates.
     /// </summary>
     private const int ConnectionTimeout = 5000;
-
-    /// <summary>
-    /// The MTU (maximum transfer unit) to use to send packets with. If the length of a packet exceeds this, we break
-    /// it up into smaller packets before sending. This ensures that we control the breaking of packets in most
-    /// cases and do not rely on smaller network devices for the breaking up as this could impact performance.
-    /// This size is lower than the limit for DTLS packets, since there is a slight DTLS overhead for packets.
-    /// </summary>
-    private const int PacketMtu = 1200;
 
     /// <summary>
     /// The number of sequence numbers to store in the received queue to construct ack fields with and
