@@ -881,6 +881,17 @@ internal class PacketManager {
             if (data == null) {
                 return new List<Packet>();
             }
+
+            // A reassembled packet can exceed 64 KiB, in which case its ushort length has wrapped around. The
+            // fragments already determine its size, so we only check that the length matches up to the wrap.
+            if (data.Length < 2 || BitConverter.ToUInt16(data, 0) != (ushort) (data.Length - 2)) {
+                Logger.Debug("Dropping reassembled packet with a mismatching length");
+                return new List<Packet>();
+            }
+
+            var packetData = new byte[data.Length - 2];
+            Array.Copy(data, 2, packetData, 0, packetData.Length);
+            return [new Packet(packetData)];
         } else {
             data = new byte[numReceived];
             Array.Copy(buffer, data, numReceived);
