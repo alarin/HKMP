@@ -35,6 +35,23 @@ internal abstract class UpdatePacket<TPacketId> : BasePacket<TPacketId> where TP
     /// Resend addon packet data indexed by sequence number it originates from.
     /// </summary>
     protected readonly Dictionary<ushort, Dictionary<byte, AddonPacketData>> ResendAddonPacketData;
+
+    /// <summary>
+    /// The maximum size in bytes of resent data in a single packet. As long as reliable data keeps getting lost, it
+    /// would otherwise all be resent in every packet, making packets ever larger and thus ever more likely to be
+    /// lost themselves. Resent data beyond this size is deferred to the next packet.
+    /// </summary>
+    private const int MaxResendDataSize = 8192;
+
+    /// <summary>
+    /// Resend entries of packet data that did not fit in this packet when it was created.
+    /// </summary>
+    private readonly Dictionary<ushort, Dictionary<TPacketId, IPacketData>> _deferredResendPacketData = new();
+
+    /// <summary>
+    /// Resend entries of addon data that did not fit in this packet when it was created.
+    /// </summary>
+    private readonly Dictionary<ushort, Dictionary<byte, AddonPacketData>> _deferredResendAddonPacketData = new();
     
     protected UpdatePacket() {
         AckField = new bool[UdpUpdateManager.AckSize];
@@ -90,64 +107,93 @@ internal abstract class UpdatePacket<TPacketId> : BasePacket<TPacketId> where TP
         
         base.CreatePacket(packet);
         
-        // Put the length of the resend data as an ushort in the packet
-        var resendLength = (ushort) ResendPacketData.Count;
-        if (ResendPacketData.Count > ushort.MaxValue) {
-            resendLength = ushort.MaxValue;
-
-            Logger.Error("Length of resend packet data dictionary does not fit in ushort");
-        }
-
-        packet.Write(resendLength);
-
-        // Add each entry of lost data to resend to the packet
-        foreach (var seqPacketDataPair in ResendPacketData) {
-            var seq = seqPacketDataPair.Key;
-            var packetData = seqPacketDataPair.Value;
-
-            // Make sure to not put more resend data in the packet than we specified
-            if (resendLength-- == 0) {
-                break;
-            }
-
-            // First write the sequence number it belongs to
-            packet.Write(seq);
-
-            // Then write the reliable packet data and note that this packet now contains reliable data
-            WritePacketData(packet, packetData);
-            ContainsReliableData = true;
-        }
-        
-        // Put the length of the addon resend data as an ushort in the packet
-        resendLength = (ushort) ResendAddonPacketData.Count;
-        if (ResendAddonPacketData.Count > ushort.MaxValue) {
-            resendLength = ushort.MaxValue;
-
-            Logger.Error("Length of addon resend packet data dictionary does not fit in ushort");
-        }
-
-        packet.Write(resendLength);
-
-        // Add each entry of lost addon data to resend to the packet
-        foreach (var seqAddonDictPair in ResendAddonPacketData) {
-            var seq = seqAddonDictPair.Key;
-            var addonDataDict = seqAddonDictPair.Value;
-
-            // Make sure to not put more resend data in the packet than we specified
-            if (resendLength-- == 0) {
-                break;
-            }
-
-            // First write the sequence number it belongs to
-            packet.Write(seq);
-
-            // Then write the reliable addon data for all addons and note that this packet
-            // now contains reliable data
-            WriteAddonDataDict(packet, addonDataDict);
-            ContainsReliableData = true;
-        }
+        // Add the entries of lost data to resend, then the entries of lost addon data to resend
+        var resendDataSize = 0;
+        WriteResendData(packet, ResendPacketData, _deferredResendPacketData, WritePacketData, ref resendDataSize);
+        WriteResendData(
+            packet,
+            ResendAddonPacketData,
+            _deferredResendAddonPacketData,
+            WriteAddonDataDict,
+            ref resendDataSize
+        );
         
         packet.WriteLength();
+    }
+
+    /// <summary>
+    /// Write the given resend entries into the packet, preceded by their count, as long as the total size of resent
+    /// data stays within <see cref="MaxResendDataSize"/>. Entries that do not fit are removed from this packet and
+    /// kept to be moved to the next packet with <see cref="MoveDeferredResendData"/>.
+    /// </summary>
+    /// <param name="packet">The raw packet instance to write into.</param>
+    /// <param name="resendData">The resend entries keyed by the sequence number they were originally sent with.
+    /// </param>
+    /// <param name="deferredData">The dictionary to put entries in that do not fit.</param>
+    /// <param name="writeData">Function that writes the data of an entry into a packet.</param>
+    /// <param name="resendDataSize">The size of resent data written into the packet so far.</param>
+    /// <typeparam name="TData">The type of the data of an entry.</typeparam>
+    private void WriteResendData<TData>(
+        Packet packet,
+        Dictionary<ushort, TData> resendData,
+        Dictionary<ushort, TData> deferredData,
+        Func<Packet, TData, bool> writeData,
+        ref int resendDataSize
+    ) {
+        var entries = new List<byte[]>();
+
+        foreach (var seqDataPair in resendData) {
+            var entryPacket = new Packet();
+
+            // First write the sequence number it belongs to, then the data itself
+            entryPacket.Write(seqDataPair.Key);
+            writeData(entryPacket, seqDataPair.Value);
+
+            // The first entry is always written, so an entry larger than the maximum still gets through
+            if (resendDataSize > 0 && resendDataSize + entryPacket.Length > MaxResendDataSize
+                || entries.Count == ushort.MaxValue) {
+                deferredData[seqDataPair.Key] = seqDataPair.Value;
+                continue;
+            }
+
+            resendDataSize += entryPacket.Length;
+            entries.Add(entryPacket.ToArray());
+        }
+
+        foreach (var seq in deferredData.Keys) {
+            resendData.Remove(seq);
+        }
+
+        packet.Write((ushort) entries.Count);
+        foreach (var entry in entries) {
+            packet.Write(entry);
+        }
+
+        // Note that this packet now contains reliable data
+        if (entries.Count > 0) {
+            ContainsReliableData = true;
+        }
+    }
+
+    /// <summary>
+    /// Move the resend data that did not fit in this packet when it was created to the given packet.
+    /// </summary>
+    /// <param name="nextPacket">The update packet that will be sent after this one.</param>
+    public void MoveDeferredResendData(UpdatePacket<TPacketId> nextPacket) {
+        foreach (var seqPacketDataPair in _deferredResendPacketData) {
+            if (!nextPacket.ResendPacketData.ContainsKey(seqPacketDataPair.Key)) {
+                nextPacket.ResendPacketData[seqPacketDataPair.Key] = seqPacketDataPair.Value;
+            }
+        }
+
+        foreach (var seqAddonDataPair in _deferredResendAddonPacketData) {
+            if (!nextPacket.ResendAddonPacketData.ContainsKey(seqAddonDataPair.Key)) {
+                nextPacket.ResendAddonPacketData[seqAddonDataPair.Key] = seqAddonDataPair.Value;
+            }
+        }
+
+        _deferredResendPacketData.Clear();
+        _deferredResendAddonPacketData.Clear();
     }
 
     /// <inheritdoc />

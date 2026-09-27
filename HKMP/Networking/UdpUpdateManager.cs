@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Timers;
 using Hkmp.Concurrency;
 using Hkmp.Logging;
@@ -259,6 +260,9 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
             // but keep the original instance for reliability data re-sending
             updatePacket = CurrentUpdatePacket;
             CurrentUpdatePacket = new TOutgoing();
+
+            // Resend data that did not fit in this packet goes out with the next one
+            updatePacket.MoveDeferredResendData(CurrentUpdatePacket);
         }
 
         _udpCongestionManager.OnSendPacket(_localSequence, updatePacket);
@@ -268,7 +272,16 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
 
         // Check if the packet exceeds (usual) MTU and break it up into fragments if so
         if (packet.Length > PacketMtu) {
-            foreach (var fragment in PacketFragments.Split(packet.ToArray(), _nextFragmentedPacketId++, PacketMtu)) {
+            List<byte[]> fragments;
+            try {
+                fragments = PacketFragments.Split(packet.ToArray(), _nextFragmentedPacketId++, PacketMtu);
+            } catch (ArgumentException e) {
+                // Exceptions in the send timer callback are swallowed, so log it here
+                Logger.Error($"Could not split update packet into fragments:\n{e}");
+                return;
+            }
+
+            foreach (var fragment in fragments) {
                 SendPacket(new Packet.Packet(fragment));
             }
 
