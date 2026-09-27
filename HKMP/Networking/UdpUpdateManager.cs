@@ -231,14 +231,18 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
         TOutgoing updatePacket;
 
         lock (Lock) {
+            // The remote sequence is updated by the receiving thread, so read it once: the ack field has to be
+            // relative to the same sequence as the ack, otherwise it acknowledges packets that were never received
+            var remoteSequence = _remoteSequence;
+
             CurrentUpdatePacket.Sequence = _localSequence;
-            CurrentUpdatePacket.Ack = _remoteSequence;
+            CurrentUpdatePacket.Ack = remoteSequence;
 
             // Fill the ack field according to which packets have been acknowledged
             var receivedQueue = _receivedQueue.GetCopy();
 
             for (ushort i = 0; i < AckSize; i++) {
-                var pastSequence = (ushort) (_remoteSequence - i - 1);
+                var pastSequence = (ushort) (remoteSequence - i - 1);
 
                 // Set the value in the array to whether we have this sequence number in our receive queue
                 CurrentUpdatePacket.AckField[i] = receivedQueue.Contains(pastSequence);
