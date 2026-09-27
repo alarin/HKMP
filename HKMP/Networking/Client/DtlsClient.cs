@@ -179,9 +179,28 @@ internal class DtlsClient {
     /// </summary>
     /// <param name="cancellationToken">The cancellation token to cancel the loop.</param>
     private void DtlsReceiveLoop(CancellationToken cancellationToken) {
-        while (!cancellationToken.IsCancellationRequested && DtlsTransport != null) {
+        // Disconnecting sets the property to null and closes the transport while we are receiving from it
+        var dtlsTransport = DtlsTransport;
+
+        while (!cancellationToken.IsCancellationRequested && dtlsTransport != null) {
             var buffer = new byte[MaxPacketSize];
-            var length = DtlsTransport.Receive(buffer, 0, buffer.Length, 5);
+
+            int length;
+            try {
+                length = dtlsTransport.Receive(buffer, 0, buffer.Length, 5);
+            } catch (Exception e) {
+                if (cancellationToken.IsCancellationRequested) {
+                    break;
+                }
+
+                if (e is not TlsFatalAlert) {
+                    throw;
+                }
+
+                Logger.Debug($"DtlsClient receive call TLS fatal alert: {e.Message}");
+                continue;
+            }
+
             if (length >= 0) {
                 DataReceivedEvent?.Invoke(buffer, length);
             }
