@@ -439,23 +439,32 @@ internal class EntityManager {
                 return new[] { enemyDeathEffects.gameObject, corpse };
             })
             // Concatenate all GameObjects for PlayMakerFSM components in the current scene, and check whether it is the
-            // FSM for a Colosseum Cage, in which case we pre-instantiate the enemy inside and concatenate it as well
+            // FSM for a Colosseum Cage or a Vengefly summon (Howling Cliffs), in which case we pre-instantiate the enemy
+            // inside and concatenate it as well. Otherwise each client would create and activate its own, unsynced enemy.
             .Concat(Object.FindObjectsOfType<PlayMakerFSM>(true)
                 .Where(fsm => fsm.gameObject.scene == scene)
                 .SelectMany(fsm => {
-                    if (!fsm.name.StartsWith("Colosseum Cage Small") &&
-                        !fsm.name.StartsWith("Colosseum Cage Large") &&
-                        !fsm.name.StartsWith("Colosseum Cage Zote")) {
+                    CreateObject createAction;
+                    if (fsm.name.StartsWith("Colosseum Cage Small") ||
+                        fsm.name.StartsWith("Colosseum Cage Large") ||
+                        fsm.name.StartsWith("Colosseum Cage Zote")) {
+                        if (!fsm.Fsm.Name.Equals("Spawn") &&
+                            !fsm.Fsm.Name.Equals("Control")
+                        ) {
+                            return new[] { fsm.gameObject };
+                        }
+
+                        createAction = fsm.GetFirstAction<CreateObject>("Init");
+                    } else if (fsm.name.StartsWith("Buzzer Summon v2") && fsm.Fsm.Name.Equals("summon")) {
+                        createAction = fsm.GetFirstAction<CreateObject>("Instantiate");
+                    } else {
                         return new[] { fsm.gameObject };
                     }
-                
-                    if (!fsm.Fsm.Name.Equals("Spawn") &&
-                        !fsm.Fsm.Name.Equals("Control")
-                    ) {
+
+                    if (createAction == null) {
                         return new[] { fsm.gameObject };
                     }
-                    
-                    var createAction = fsm.GetFirstAction<CreateObject>("Init");
+
                     EntityFsmActions.ApplyNetworkDataFromAction(null, createAction);
 
                     createAction.Enabled = false;
