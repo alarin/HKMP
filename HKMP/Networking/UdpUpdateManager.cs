@@ -48,7 +48,7 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
     /// <summary>
     /// The UDP congestion manager instance.
     /// </summary>
-    private readonly UdpCongestionManager<TOutgoing, TPacketId> _udpCongestionManager;
+    private UdpCongestionManager<TOutgoing, TPacketId> _udpCongestionManager;
 
     /// <summary>
     /// The last sent sequence number.
@@ -177,6 +177,22 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
     /// sending update packets and trigger on connection timing out.
     /// </summary>
     public void StartUpdates() {
+        // The same instance is used again when reconnecting. The peer of the new connection starts its sequence
+        // numbers over, and data, acks and received sequence numbers of the previous connection must not carry over:
+        // they would acknowledge the wrong packets and make new resent data look like duplicates.
+        lock (Lock) {
+            _localSequence = 0;
+            _remoteSequence = 0;
+            _receivedQueue.Clear();
+            _receivedHistory.Clear();
+            _receivedResendHistory.Clear();
+            _receivedAddonResendHistory.Clear();
+            CurrentUpdatePacket = new TOutgoing();
+            _udpCongestionManager = new UdpCongestionManager<TOutgoing, TPacketId>(this);
+            CurrentSendRate = UdpCongestionManager<TOutgoing, TPacketId>.HighSendRate;
+            _sendTimer.Interval = CurrentSendRate;
+        }
+
         _lastSendRate = CurrentSendRate;
         _sendTimer.Start();
         _heartBeatTimer.Start();

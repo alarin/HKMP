@@ -46,4 +46,12 @@ internal class SequenceHistory {
     /// <param name="sequence">The sequence number to check.</param>
     /// <returns>True if the sequence number was added and not forgotten yet, false otherwise.</returns>
     public bool Contains(ushort sequence) => _set.Contains(sequence);
+
+    /// <summary>
+    /// Forget all sequence numbers.
+    /// </summary>
+    public void Clear() {
+        _order.Clear();
+        _set.Clear();
+    }
 }
