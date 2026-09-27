@@ -100,7 +100,11 @@ namespace HkmpServer.Logging {
                         if (!File.Exists(_logFile)) {
                             Directory.CreateDirectory(_logDirectory);
 
-                            _currentWriter = new StreamWriter(File.Create(_logFile));
+                            // Share read access, like the append case below, so the log can be read while the
+                            // server is running
+                            _currentWriter = new StreamWriter(
+                                new FileStream(_logFile, FileMode.Create, FileAccess.Write, FileShare.Read)
+                            );
                         } else {
                             _currentWriter = new StreamWriter(_logFile, true);
                         }
