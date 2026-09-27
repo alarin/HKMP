@@ -22,4 +22,6 @@ MonoBehaviour type) and run it on Windows / .NET Framework:
 Options: `--clients`, `--duration`/`--drain` (seconds), `--loss`, `--dup`, `--reorder` with `--reorder-delay`,
 `--delay` with `--jitter` (ms), `--items`, `--burst-every`, `--burst-items`, `--item-size`, `--entities`,
 `--seed`, `--port` (proxies use the following ports), `--simultaneous-connect`, `--faults-during-connect`,
+`--cpu-stress` (number of busy threads during traffic), `--reconnect` (halfway, disconnect and reconnect every
+client with the same NetClient),
 `--name`, `--log-dir`. Faults are injected after all clients connected unless `--faults-during-connect` is given.

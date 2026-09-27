@@ -118,15 +118,64 @@ internal static class Program {
         var connectOk = connected == clients.Count && clientIds.Count == clients.Count;
 
         var trafficWatch = Stopwatch.StartNew();
+        var stressing = true;
+        for (var i = 0; i < Opt.CpuStressThreads; i++) {
+            // Busy threads delay thread pool work like timer callbacks, as a loaded game does
+            new Thread(() => {
+                var x = 0.0;
+                while (Volatile.Read(ref stressing)) x = System.Math.Sqrt(x + 1);
+            }) { IsBackground = true }.Start();
+        }
+
         if (connectOk) {
             foreach (var proxy in proxies) {
                 proxy.FaultsEnabled = true;
             }
 
-            RunTraffic(server, clients, clientIds);
+            var seqs = new Dictionary<string, int>();
+            if (!Opt.Reconnect) {
+                RunTraffic(server, clients, clientIds, seqs, Opt.DurationMs);
+            } else {
+                RunTraffic(server, clients, clientIds, seqs, Opt.DurationMs / 2);
+
+                // Let everything arrive, then reconnect every client with the same NetClient instance, like the
+                // game does when the player disconnects and joins again
+                foreach (var proxy in proxies) proxy.FaultsEnabled = false;
+                Thread.Sleep(3000);
+
+                foreach (var (name, client) in clients) {
+                    client.Disconnect();
+                    // What the server manager does when it receives the disconnect of a player
+                    server.OnClientDisconnect(clientIds[name]);
+                }
+
+                Thread.Sleep(1000);
+                Log.Line("reconnecting all clients");
+
+                foreach (var (name, client) in clients) {
+                    client.Connect("127.0.0.1", Opt.Port + 1 + clients.FindIndex(c => c.Name == name), name,
+                        $"stress-auth-key-{name}", []);
+                    var watch = Stopwatch.StartNew();
+                    while (watch.ElapsedMilliseconds < Opt.ConnectTimeoutMs &&
+                           client.ConnectionStatus != ClientConnectionStatus.Connected) {
+                        Thread.Sleep(20);
+                    }
+                }
+
+                var reconnected = clients.Count(c => c.Client.ConnectionStatus == ClientConnectionStatus.Connected);
+                Log.Line($"reconnected {reconnected}/{clients.Count}");
+                if (reconnected != clients.Count) {
+                    Console.WriteLine($"[{Opt.Name}] only {reconnected}/{clients.Count} clients reconnected");
+                    connectOk = false;
+                }
+
+                foreach (var proxy in proxies) proxy.FaultsEnabled = true;
+                RunTraffic(server, clients, clientIds, seqs, Opt.DurationMs / 2);
+            }
         }
 
         var trafficMs = trafficWatch.ElapsedMilliseconds;
+        Volatile.Write(ref stressing, false);
 
         // Stop injecting faults and let the reliability layer catch up
         foreach (var proxy in proxies) {
@@ -166,14 +215,15 @@ internal static class Program {
     private static void RunTraffic(
         NetServer server,
         List<(string Name, NetClient Client)> clients,
-        ConcurrentDictionary<string, ushort> clientIds
+        ConcurrentDictionary<string, ushort> clientIds,
+        Dictionary<string, int> seqs,
+        int durationMs
     ) {
-        var seqs = new Dictionary<string, int>();
         var tick = 0;
         var watch = Stopwatch.StartNew();
         var random = new Random(Opt.Seed);
 
-        while (watch.ElapsedMilliseconds < Opt.DurationMs) {
+        while (watch.ElapsedMilliseconds < durationMs) {
             var items = tick % Opt.BurstEveryTicks == 0 ? Opt.BurstItems : Opt.ItemsPerTick;
 
             foreach (var (name, client) in clients) {
@@ -284,7 +334,7 @@ internal static class Program {
             dupTotal += stats.Duplicates;
             corruptTotal += stats.Corrupt;
             lines.Add(
-                $"  {stats.Name,-16} sent {stats.Sent,6} recv {received,6} missing {missing,6} dup {stats.Duplicates,5} corrupt {stats.Corrupt,4} ooo {stats.OutOfOrder,5}");
+                $"  {stats.Name,-16} sent {stats.Sent,6} recv {received,6} missing {missing,6} dup {stats.Duplicates,5} corrupt {stats.Corrupt,4} ooo {stats.OutOfOrder,5}{MissingRanges(stats)}");
         }
 
         ok &= missingTotal == 0 && dupTotal == 0 && corruptTotal == 0;
@@ -307,6 +357,24 @@ internal static class Program {
         Console.WriteLine($"[{Opt.Name}] {summary}");
         foreach (var line in lines) Console.WriteLine(line);
         return ok;
+    }
+
+    private static string MissingRanges(StreamStats stats) {
+        var ranges = new List<string>();
+        lock (stats) {
+            var start = -1;
+            for (var seq = 0; seq <= stats.Sent; seq++) {
+                var missing = seq < stats.Sent && !stats.Received.Contains(seq);
+                if (missing && start < 0) start = seq;
+                if (!missing && start >= 0) {
+                    ranges.Add(start == seq - 1 ? $"{start}" : $"{start}-{seq - 1}");
+                    start = -1;
+                }
+            }
+        }
+
+        if (ranges.Count == 0) return "";
+        return " missing seqs " + string.Join(",", ranges.Take(12)) + (ranges.Count > 12 ? $",... ({ranges.Count} ranges)" : "");
     }
 
     /// <summary>
@@ -367,6 +435,8 @@ internal class Options {
     public int Seed = 1;
     public bool FaultsDuringConnect;
     public bool SimultaneousConnect;
+    public int CpuStressThreads;
+    public bool Reconnect;
     public string LogDir = "logs";
     public readonly FaultSettings Faults = new FaultSettings();
 
@@ -393,6 +463,8 @@ internal class Options {
                 case "--jitter": Faults.JitterMs = int.Parse(value); i++; break;
                 case "--faults-during-connect": FaultsDuringConnect = true; break;
                 case "--simultaneous-connect": SimultaneousConnect = true; break;
+                case "--cpu-stress": CpuStressThreads = int.Parse(value); i++; break;
+                case "--reconnect": Reconnect = true; break;
                 case "--log-dir": LogDir = value; i++; break;
                 default: throw new ArgumentException($"Unknown argument: {args[i]}");
             }
