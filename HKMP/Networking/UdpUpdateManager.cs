@@ -70,6 +70,11 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
     protected readonly object Lock = new object();
 
     /// <summary>
+    /// Object to lock sending update packets, so that at most one update packet is being sent at a time.
+    /// </summary>
+    private readonly object _sendLock = new object();
+
+    /// <summary>
     /// The current instance of the update packet.
     /// </summary>
     protected TOutgoing CurrentUpdatePacket;
@@ -202,6 +207,17 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
     /// Create and send the current update packet.
     /// </summary>
     private void CreateAndSendUpdatePacket() {
+        // The send timer can elapse again while the previous packet is still being sent. The receiver reassembles
+        // packets larger than the MTU from consecutive datagrams, so the parts of two packets must not interleave.
+        lock (_sendLock) {
+            CreateAndSendUpdatePacketLocked();
+        }
+    }
+
+    /// <summary>
+    /// Create and send the current update packet. Must only be called while holding the send lock.
+    /// </summary>
+    private void CreateAndSendUpdatePacketLocked() {
         if (DtlsTransport == null) {
             return;
         }
