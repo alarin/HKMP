@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net472</TargetFramework>
+        <LangVersion>latest</LangVersion>
+        <RootNamespace>Hkmp.NetStress</RootNamespace>
+        <AssemblyName>HKMP.NetStress</AssemblyName>
+        <!-- The HKMP build to test against, override with -p:HkmpDll=... -->
+        <HkmpDll Condition="'$(HkmpDll)' == ''">..\HKMP\bin\Release\net472\HKMP.dll</HkmpDll>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Reference Include="HKMP">
+            <HintPath>$(HkmpDll)</HintPath>
+        </Reference>
+        <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
+    </ItemGroup>
+</Project>

@@ -16,6 +16,7 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="HkmpServer" />
+        <InternalsVisibleTo Include="HKMP.NetStress" />
     </ItemGroup>
 
     <ItemGroup>
