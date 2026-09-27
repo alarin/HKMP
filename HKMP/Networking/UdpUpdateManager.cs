@@ -66,6 +66,28 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
     private readonly ConcurrentFixedSizeQueue<ushort> _receivedQueue;
 
     /// <summary>
+    /// The number of sequence numbers to remember for recognizing resent data that was already received. This is
+    /// much longer than the receive queue, since resent data can arrive long after the original packet when acks
+    /// are delayed.
+    /// </summary>
+    private const int ReceivedHistorySize = 1024;
+
+    /// <summary>
+    /// The sequence numbers of the last received packets, only accessed by the receiving thread.
+    /// </summary>
+    private readonly SequenceHistory _receivedHistory = new(ReceivedHistorySize);
+
+    /// <summary>
+    /// The original sequence numbers of the last received resent packet data, only accessed by the receiving thread.
+    /// </summary>
+    private readonly SequenceHistory _receivedResendHistory = new(ReceivedHistorySize);
+
+    /// <summary>
+    /// The original sequence numbers of the last received resent addon data, only accessed by the receiving thread.
+    /// </summary>
+    private readonly SequenceHistory _receivedAddonResendHistory = new(ReceivedHistorySize);
+
+    /// <summary>
     /// Object to lock asynchronous accesses.
     /// </summary>
     protected readonly object Lock = new object();
@@ -196,8 +218,10 @@ internal abstract class UdpUpdateManager<TOutgoing, TPacketId> : UdpUpdateManage
         var sequence = packet.Sequence;
         _receivedQueue.Enqueue(sequence);
 
+        _receivedHistory.Add(sequence);
+
         // Instruct the packet to drop all resent data that was received already
-        packet.DropDuplicateResendData(_receivedQueue.GetCopy());
+        packet.DropDuplicateResendData(_receivedHistory, _receivedResendHistory, _receivedAddonResendHistory);
 
         // Update the latest remote sequence number if applicable
         if (IsSequenceGreaterThan(sequence, _remoteSequence)) {

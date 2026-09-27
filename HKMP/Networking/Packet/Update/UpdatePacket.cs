@@ -393,26 +393,34 @@ internal abstract class UpdatePacket<TPacketId> : BasePacket<TPacketId> where TP
     }
     
     /// <summary>
-    /// Drops resend data that is duplicate, i.e. that we already received in an earlier packet.
+    /// Drops resend data that is duplicate, i.e. that we already received in an earlier packet, either in the packet
+    /// it was originally sent in or resent in another packet. The resend data that remains is added to the
+    /// respective history.
     /// </summary>
-    /// <param name="receivedSequenceNumbers">A queue containing sequence numbers that were already
+    /// <param name="receivedSequences">The sequence numbers of packets that were already received.</param>
+    /// <param name="receivedResendSequences">The original sequence numbers of resent packet data that was already
     /// received.</param>
-    public void DropDuplicateResendData(Queue<ushort> receivedSequenceNumbers) {
-        // For each key in the resend dictionary, we check whether it is contained in the
-        // queue of sequence numbers that we already received. If so, we remove it from the dictionary
-        // because it is duplicate data that we already handled
-        foreach (var resendSequence in new List<ushort>(ResendPacketData.Keys)) {
-            if (receivedSequenceNumbers.Contains(resendSequence)) {
-                // Logger.Info("Dropping resent data due to duplication");
-                ResendPacketData.Remove(resendSequence);
-            }
-        }
+    /// <param name="receivedAddonResendSequences">The original sequence numbers of resent addon data that was
+    /// already received.</param>
+    public void DropDuplicateResendData(
+        SequenceHistory receivedSequences,
+        SequenceHistory receivedResendSequences,
+        SequenceHistory receivedAddonResendSequences
+    ) {
+        DropDuplicates(ResendPacketData, receivedSequences, receivedResendSequences);
+        DropDuplicates(ResendAddonPacketData, receivedSequences, receivedAddonResendSequences);
 
-        // Do the same for addon data
-        foreach (var resendSequence in new List<ushort>(ResendAddonPacketData.Keys)) {
-            if (receivedSequenceNumbers.Contains(resendSequence)) {
-                // Logger.Info("Dropping resent data due to duplication");
-                ResendAddonPacketData.Remove(resendSequence);
+        static void DropDuplicates<TData>(
+            Dictionary<ushort, TData> resendData,
+            SequenceHistory receivedSequences,
+            SequenceHistory receivedResendSequences
+        ) {
+            foreach (var resendSequence in new List<ushort>(resendData.Keys)) {
+                if (receivedSequences.Contains(resendSequence) || receivedResendSequences.Contains(resendSequence)) {
+                    resendData.Remove(resendSequence);
+                } else {
+                    receivedResendSequences.Add(resendSequence);
+                }
             }
         }
     }
