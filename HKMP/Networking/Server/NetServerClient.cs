@@ -56,6 +56,11 @@ internal class NetServerClient {
     public readonly IPEndPoint EndPoint;
 
     /// <summary>
+    /// Byte array containing leftover data from this client that was not processed as a packet yet.
+    /// </summary>
+    public byte[] LeftoverData;
+
+    /// <summary>
     /// Construct the client with the given DTLS transport and endpoint.
     /// </summary>
     /// <param name="dtlsTransport">The underlying DTLS transport.</param>
