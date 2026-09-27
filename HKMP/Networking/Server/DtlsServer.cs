@@ -190,6 +190,7 @@ internal class DtlsServer {
 
                     // Set the IP endpoint of the datagram transport instance so it can send data to the correct IP
                     serverDatagramTransport.IPEndPoint = ipEndPoint;
+                    serverDatagramTransport.HandshakeStarted.Set();
                 } else if (!transportEndPoint.Equals(ipEndPoint)) {
                     continue;
                 }
@@ -236,6 +237,13 @@ internal class DtlsServer {
 
             datagramTransport = new ServerDatagramTransport(_socket);
             _currentDatagramTransport = datagramTransport;
+
+            // The handshake timeout counts from the start of Accept, so only start accepting once a ClientHello
+            // arrived. Otherwise a client that starts its handshake just before the timeout gets cut off halfway.
+            WaitHandle.WaitAny([datagramTransport.HandshakeStarted.WaitHandle, cancellationToken.WaitHandle]);
+            if (cancellationToken.IsCancellationRequested) {
+                break;
+            }
 
             DtlsTransport dtlsTransport;
             try {

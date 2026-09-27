@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using Hkmp.Logging;
 
 namespace Hkmp.Networking.Server;
@@ -18,6 +19,11 @@ internal class ServerDatagramTransport : UdpDatagramTransport {
     /// The IP endpoint for the client that this datagram transport belongs to.
     /// </summary>
     public IPEndPoint IPEndPoint { get; set; }
+
+    /// <summary>
+    /// Set once a ClientHello claimed this transport for its endpoint, i.e. once a handshake started.
+    /// </summary>
+    public readonly ManualResetEventSlim HandshakeStarted = new();
 
     public ServerDatagramTransport(Socket socket) {
         _socket = socket;
